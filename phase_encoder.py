@@ -36,10 +36,10 @@ class ComplexConv2d(nn.Module):
         self.imag_conv = nn.Conv2d(self.in_channels, self.out_channels, kernel_size, self.stride, padding=[
                                    self.padding[0], 0], dilation=self.dilation, groups=self.groups)
 
-        nn.init.normal_(self.real_conv.weight.data, std=0.05)
-        nn.init.normal_(self.imag_conv.weight.data, std=0.05)
-        nn.init.constant_(self.real_conv.bias, 0.)
-        nn.init.constant_(self.imag_conv.bias, 0.)
+        #nn.init.normal_(self.real_conv.weight.data, std=0.05)
+        #nn.init.normal_(self.imag_conv.weight.data, std=0.05)
+        #nn.init.constant_(self.real_conv.bias, 0.)
+        #nn.init.constant_(self.imag_conv.bias, 0.)
 
     def forward(self, inputs):
         if self.padding[1] != 0 and self.causal:
@@ -66,6 +66,7 @@ class ComplexConv2d(nn.Module):
         real = real2real - imag2imag
         imag = real2imag + imag2real
         out = torch.cat([real, imag], self.complex_axis)
+
         return out
 
 
@@ -93,6 +94,9 @@ class ComplexLinearProjection(nn.Module):
         outputs = self.clp(inputs)
         real, imag = outputs.chunk(2, dim=1)
         outputs = torch.sqrt(real**2+imag**2+1e-8)
+        if outputs.isnan().any() : 
+            import pdb
+            pdb.set_trace()
         return outputs
 
 
@@ -119,6 +123,7 @@ class PhaseEncoder(nn.Module):
             outs.append(layer(cspecs[idx]))
         real, imag = complex_cat(outs, dim=1)
         amp = self.clp(real, imag)
+
         return amp**self.alpha
 
 

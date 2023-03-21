@@ -10,27 +10,22 @@ import torch.nn as nn
 import torch.nn.functional as tf
 from typing import List
 
-from tfcm import TFCM
-from asa import ASA
-from phase_encoder import PhaseEncoder
-from f_sampling import FD, FU
-from erb import Banks
-from stft import STFT
-
+from .tfcm import TFCM
+from .asa import ASA
+from .phase_encoder import PhaseEncoder
+from .f_sampling import FD, FU
+from .erb import Banks
+from .stft import STFT
 
 def parse_1dstr(sstr: str) -> List[int]:
     return list(map(int, sstr.split(",")))
 
-
 def parse_2dstr(sstr: str) -> List[List[int]]:
     return [parse_1dstr(tok) for tok in sstr.split(";")]
 
-
 eps = 1e-10
 
-
 class MTFAANet(nn.Module):
-
     def __init__(self,
                  n_sig=1,
                  PEc=4,
@@ -43,7 +38,7 @@ class MTFAANet(nn.Module):
                  win_len=32*48,
                  win_hop=8*48,
                  nerb=256,
-                 sr=48000,
+                 sr=16000,
                  win_type="hann",
                  ):
         super(MTFAANet, self).__init__()
@@ -101,18 +96,23 @@ class MTFAANet(nn.Module):
         self.register_buffer('kernel', kernel)
         self.mag_f_dim = mag_f_dim
 
-    def forward(self, sigs):
+    def forward(self, sig):
+        B, L = sig.shape
         """
         sigs: list [B N] of len(sigs)
+        -> sig : [B L]
         """
         cspecs = []
-        for sig in sigs:
-            cspecs.append(self.stft.transform(sig))
+
+        #for sig in sigs:
+        #    cspecs.append(self.stft.transform(sig))
+        cspecs = [self.stft.transform(sig)]
         # D / E ?
         D_cspec = cspecs[0]
         mag = th.norm(D_cspec, dim=1)
         pha = torch.atan2(D_cspec[:, -1, ...], D_cspec[:, 0, ...])
         out = self.ERB.amp2bank(self.PE(cspecs))
+
         encoder_out = []
         for idx in range(len(self.encoder_fd)):
             out = self.encoder_fd[idx](out)
@@ -125,7 +125,9 @@ class MTFAANet(nn.Module):
         for idx in range(len(self.decoder_fu)):
             out = self.decoder_fu[idx](out, encoder_out[-1-idx])
             out = self.decoder_bn[idx](out)
+        
         out = self.ERB.bank2amp(out)
+
         # stage 1
         mag_mask = self.mag_mask(out)
         mag_pad = tf.pad(
@@ -141,34 +143,6 @@ class MTFAANet(nn.Module):
         pha_mask = th.atan2(imag_mask+eps, real_mask+eps)
         real = mag * mag_mask.tanh() * th.cos(pha+pha_mask)
         imag = mag * mag_mask.tanh() * th.sin(pha+pha_mask)
-        return mag, th.stack([real, imag], dim=1), self.stft.inverse(real, imag)
+        #return mag, th.stack([real, imag], dim=1), self.stft.inverse(real, imag)
 
-
-def test_nnet():
-    # noise supression (microphone, )
-    nnet = MTFAANet(n_sig=1)
-    inp = th.randn(3, 48000)
-    mag, cspec, wav = nnet([inp])
-    print(mag.shape, cspec.shape, wav.shape)
-    # echo cancellation (microphone, error, reference,)
-    nnet = MTFAANet(n_sig=3)
-    mag, cspec, wav = nnet([inp, inp, inp])
-    print(mag.shape, cspec.shape, wav.shape)
-
-
-def test_mac():
-    from thop import profile, clever_format
-    import torch as th
-    nnet = MTFAANet(n_sig=3)
-    # hop=8ms, win=32ms@48KHz, process 1s.
-    inp = th.randn(1, 48000)
-    # inp = th.randn(1, 2, 769, 126)
-    macs, params = profile(nnet, inputs=([inp, inp, inp],), verbose=False)
-    macs, params = clever_format([macs, params], "%.3f")
-    print('macs: ', macs)
-    print('params: ', params)
-
-
-if __name__ == "__main__":
-    # test_nnet()
-    test_mac()
+        return self.stft.inverse(real, imag,length=L)

@@ -16,8 +16,8 @@ class Banks(nn.Module):
         filter, _ = linear_fbanks.linear_filter_banks(
             nfilts=self.nfilters,
             nfft=self.nfft,
-            low_freq=low_freq,
-            high_freq=high_freq,
+            #low_freq=low_freq,
+            #high_freq=high_freq,
             fs=self.fs,
         )
         filter = th.from_numpy(filter).float()
