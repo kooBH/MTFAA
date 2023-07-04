@@ -62,6 +62,38 @@ class ASA(nn.Module):
         out = self.proj(t_out)
         return out + inp
 
+# ASA without T-attention
+class FASA(nn.Module):
+    def __init__(self, c=64, causal=True):
+        super(FASA, self).__init__()
+        self.d_c = c//4
+        self.f_qkv = nn.Sequential(
+            nn.Conv2d(c, self.d_c*3, kernel_size=(1, 1), bias=False),
+            nn.BatchNorm2d(self.d_c*3),
+            nn.PReLU(self.d_c*3),
+        )
+        self.proj = nn.Sequential(
+            nn.Conv2d(self.d_c, c, kernel_size=(1, 1), bias=False),
+            nn.BatchNorm2d(c),
+            nn.PReLU(c),
+        )
+        self.causal = causal
+
+    def forward(self, inp):
+        """
+        inp: B C F T
+        """
+        # f-attention
+        f_qkv = self.f_qkv(inp)
+        qf, kf, v = tuple(einops.rearrange(
+            f_qkv, "b (c k) f t->k b c f t", k=3))
+        f_score = th.einsum("bcft,bcyt->btfy", qf, kf) / (self.d_c**0.5)
+        f_score = f_score.softmax(dim=-1)
+        f_out = th.einsum('btfy,bcyt->bcft', [f_score, v])
+        # t-attention
+        out = self.proj(f_out)
+        return out + inp
+
 
 def test_asa():
     nnet = ASA(c=64)

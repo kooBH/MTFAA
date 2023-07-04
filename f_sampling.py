@@ -2,6 +2,7 @@
 Frequency Down/Up Sampling.
 
 shmzhang@aslp-npu.org, 2022
+nine4409@sogang.ac.kr, 2023
 """
 
 
@@ -15,6 +16,20 @@ class FD(nn.Module):
         self.fd = nn.Sequential(
             nn.Conv2d(cin, cout, K, S, P, groups=2),
             nn.BatchNorm2d(cout),
+            nn.PReLU(cout)
+        )
+
+    def forward(self, x):
+        return self.fd(x)
+    
+# ConvNext style FD
+class FDS(nn.Module):
+    def __init__(self, cin, cout, K=(7, 1), S=(4, 1), P=(2, 0)):
+        super(FDS, self).__init__()
+        self.fd = nn.Sequential(
+            nn.Conv2d(cin, cin, K, S, P, groups=cout),
+            nn.BatchNorm2d(cout),
+            nn.Conv2d(cin, cout, 1),
             nn.PReLU(cout)
         )
 

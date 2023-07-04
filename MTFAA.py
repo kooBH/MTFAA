@@ -11,9 +11,9 @@ import torch.nn.functional as tf
 from typing import List
 
 from .tfcm import TFCM
-from .asa import ASA
+from .asa import ASA, FASA
 from .phase_encoder import PhaseEncoder
-from .f_sampling import FD, FU
+from .f_sampling import FD, FU, FDS
 from .erb import Banks
 from .stft import STFT
 
@@ -29,7 +29,9 @@ class MTFAANet(nn.Module):
     def __init__(self,
                  n_sig=1,
                  PEc=4,
-                 Co="48,96,192",
+                 #Co="48,96,192",
+                 #Co="96,96,96",
+                 Co=[48,96,92],
                  O="1,1,1",
                  causal=True,
                  bottleneck_layer=2,
@@ -40,6 +42,8 @@ class MTFAANet(nn.Module):
                  nerb=256,
                  sr=16000,
                  win_type="hann",
+                 type_encoder = "FD",
+                 type_ASA = "ASA"
                  ):
         super(MTFAANet, self).__init__()
         self.PE = PhaseEncoder(PEc, n_sig)
@@ -51,18 +55,33 @@ class MTFAANet(nn.Module):
         self.bottleneck = nn.ModuleList()
         self.decoder_fu = nn.ModuleList()
         self.decoder_bn = nn.ModuleList()
-        C_en = [PEc//2*n_sig] + parse_1dstr(Co)
-        C_de = [4] + parse_1dstr(Co)
+        C_en = [PEc//2*n_sig] + Co 
+        C_de = [4] + Co
         O = parse_1dstr(O)
+
+        if type_encoder == "FD" : 
+            encoder = FD
+        elif type_encoder == "FDS" : 
+            encoder = FDS
+        else :
+            raise Exception("Encoder type {} is not defined".format(type_encoder))
+
+        if type_ASA == "ASA"  :
+            asa = ASA
+        elif type_ASA == "FASA" :
+            asa = FASA
+        else :
+            raise Exception("ASA type {} is not defined".format(type_ASA))
+
         for idx in range(len(C_en)-1):
             self.encoder_fd.append(
-                FD(C_en[idx], C_en[idx+1]),
+                encoder(C_en[idx], C_en[idx+1]),
             )
             self.encoder_bn.append(
                 nn.Sequential(
                     TFCM(C_en[idx+1], (3, 3),
                          tfcm_layer=tfcm_layer, causal=causal),
-                    ASA(C_en[idx+1], causal=causal),
+                    asa(C_en[idx+1], causal=causal),
                 )
             )
 
@@ -71,7 +90,7 @@ class MTFAANet(nn.Module):
                 nn.Sequential(
                     TFCM(C_en[-1], (3, 3),
                          tfcm_layer=tfcm_layer, causal=causal),
-                    ASA(C_en[-1], causal=causal),
+                    asa(C_en[-1], causal=causal),
                 )
             )
 
@@ -83,9 +102,10 @@ class MTFAANet(nn.Module):
                 nn.Sequential(
                     TFCM(C_de[idx-1], (3, 3),
                          tfcm_layer=tfcm_layer, causal=causal),
-                    ASA(C_de[idx-1], causal=causal),
+                    asa(C_de[idx-1], causal=causal),
                 )
             )
+
         # MEA is causal, so mag_t_dim = 1.
         self.mag_mask = nn.Conv2d(
             4, mag_f_dim, kernel_size=(3, 1), padding=(1, 0))
@@ -96,22 +116,11 @@ class MTFAANet(nn.Module):
         self.register_buffer('kernel', kernel)
         self.mag_f_dim = mag_f_dim
 
-    def forward(self, sig):
-        B, L = sig.shape
-        """
-        sigs: list [B N] of len(sigs)
-        -> sig : [B L]
-        """
-        cspecs = []
-
-        #for sig in sigs:
-        #    cspecs.append(self.stft.transform(sig))
-        cspecs = [self.stft.transform(sig)]
-        # D / E ?
-        D_cspec = cspecs[0]
-        mag = th.norm(D_cspec, dim=1)
-        pha = torch.atan2(D_cspec[:, -1, ...], D_cspec[:, 0, ...])
-        out = self.ERB.amp2bank(self.PE(cspecs))
+    def forward(self, X):
+        # X : [B,C(2),F,T]
+        mag = th.norm(X, dim=1)
+        pha = torch.atan2(X[:, -1, ...], X[:, 0, ...])
+        out = self.ERB.amp2bank(self.PE([X]))
 
         encoder_out = []
         for idx in range(len(self.encoder_fd)):
@@ -145,4 +154,53 @@ class MTFAANet(nn.Module):
         imag = mag * mag_mask.tanh() * th.sin(pha+pha_mask)
         #return mag, th.stack([real, imag], dim=1), self.stft.inverse(real, imag)
 
-        return self.stft.inverse(real, imag,length=L)
+        return real + imag*1j
+    
+
+class MTFAA_helper(nn.Module):
+    def __init__(self,
+                 Co=[48,96,192],
+                 type_encoder = "FD",
+                 type_ASA = "ASA",
+                 n_fft = 512,
+                 n_hop = 128,
+                 n_erb = 64
+                 ) :
+        super(MTFAA_helper,self).__init__()
+
+        self.n_fft = n_fft
+        self.n_hop = n_hop
+
+        self.model = MTFAANet(
+            Co=Co,
+            win_len= n_fft,
+            win_hop = n_hop,
+            nerb=n_erb,
+            type_encoder=type_encoder,
+            type_ASA=type_ASA
+        )
+
+    def forward(self, x):
+        # STFT
+        X = torch.stft(x, n_fft = self.n_fft, window=torch.hann_window(self.n_fft).to(x.device),return_complex=False)
+
+        # X.shape == (B,F,T,2)
+        X = torch.permute(X,(0,3,1,2))
+        # X.shape == (B,2,F,T)
+        Y = self.model(X)
+
+        # iSTFT
+        y = torch.istft(Y, self.n_fft, window = torch.hann_window(self.n_fft).to(Y.device))
+
+        return y
+    
+
+
+def test():
+    x = torch.rand(2,64000)
+    print(x.shape)
+
+    model = MTFAA_helper()
+
+    y = model(x)
+    print(y.shape)
